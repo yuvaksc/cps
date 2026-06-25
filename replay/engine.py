@@ -50,8 +50,7 @@ def _load_dataframe(path: str) -> pd.DataFrame:
 
 
 class ReplayEngine:
-    def __init__(self, dataset_path: str | None = None,
-                 artifacts_dir: str | None = None):
+    def __init__(self, dataset_path: str | None = None, artifacts_dir: str | None = None):
         path = dataset_path or settings.replay_dataset_path
         if not os.path.exists(path):
             # fall back to the lightweight sample fixture
@@ -158,9 +157,8 @@ class ReplayEngine:
         so it's computed only once per dataset."""
         if not self.segments:
             return []
+        cache = os.path.join(self.scorer.artifacts_dir, "detected_attacks.json")
         sig = f"{os.path.basename(self.path)}:{self.n}"
-        key = hashlib.md5(sig.encode()).hexdigest()[:10]
-        cache = os.path.join(self.scorer.artifacts_dir, f"detected_attacks_{key}.json")
         if os.path.exists(cache):
             try:
                 with open(cache) as f:

@@ -4,8 +4,7 @@
 > SWaT industrial water-treatment testbed, wrapped in a **4-agent LangGraph reasoning
 > pipeline** (classify → assess → mitigate), a **FastAPI WebSocket sensor stream**, a
 > **Supabase** event store with Realtime broadcasting, a controllable **Replay Engine**,
-> and a **Next.js** dashboard. Dockerized, CI/CD via GitHub Actions, deployable to
-> Render (backend) + Vercel (frontend).
+> and a **Next.js** dashboard. Packaged as a Docker image with **GitHub Actions CI/CD**.
 
 ---
 
@@ -13,10 +12,10 @@
 
 ```mermaid
 flowchart LR
-  subgraph B["Browser — Vercel"]
+  subgraph B["Browser"]
     UI["Next.js dashboard<br/>(chart · feed · agent panel)"]
   end
-  subgraph API["FastAPI — Render"]
+  subgraph API["FastAPI backend (Docker)"]
     WS["/ws/sensor-stream/"]
     REST["REST: /analyze · /anomalies · /replay/*"]
     RE["Replay Engine"]
@@ -57,7 +56,7 @@ flowchart LR
 | Backend | FastAPI (REST + WebSocket) |
 | Database | Supabase (PostgreSQL + Realtime) |
 | Frontend | Next.js (App Router) + Recharts + `@supabase/supabase-js` |
-| DevOps | Docker, docker-compose, GitHub Actions, Render, Vercel |
+| DevOps | Docker (backend image), GitHub Actions CI/CD → GHCR |
 
 ---
 
@@ -73,8 +72,8 @@ frontend/              Next.js dashboard (2 pages: live dashboard + anomaly hist
 tests/                 pytest: scorer, API, agents, replay (16 tests)
 scripts/               extract_sample · build_replay_data · diag_detector · live_test
 db/supabase_setup.sql  Schema + Realtime + RLS read policy
-Dockerfile docker-compose.yml render.yaml   Deployment
-.github/workflows/     ci.yml (pytest + next build) · docker.yml (GHCR on tag)
+Dockerfile             Backend container image (built + pushed to GHCR by CI)
+.github/workflows/     ci.yml (pytest + next build) · docker.yml (image → GHCR on tag)
 ```
 
 ---
@@ -119,12 +118,6 @@ cd frontend
 npm install
 cp .env.local.example .env.local     # API URLs + Supabase anon key (browser-safe)
 npm run dev                          # http://localhost:3000
-```
-
-### Everything at once (Docker)
-
-```bash
-docker compose up --build            # api :8000 + frontend :3000
 ```
 
 ---
@@ -173,16 +166,55 @@ Tests run without any secrets (agents fall back to heuristics, DB writes skip). 
 
 ---
 
-## Deployment
+## CI/CD — how build, test, and image work on GitHub
 
-- **Backend → Render:** the [`render.yaml`](render.yaml) blueprint deploys the Dockerized
-  API. Set `SUPABASE_URL`, `SUPABASE_KEY`, `GROQ_API_KEY`, and `CORS_ORIGINS`
-  (= your Vercel URL) in the dashboard. Render injects `$PORT`.
-- **Frontend → Vercel:** import the repo, set **Root Directory = `frontend`**, and add
-  `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_API_WS_URL` (your Render `wss://…/ws/sensor-stream`),
-  `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
-- **Image → GHCR:** pushing a `v*` tag builds and publishes the backend image
-  (`.github/workflows/docker.yml`).
+Two GitHub Actions workflows run automatically — nothing to manage, GitHub's runners do it.
+Watch them at `github.com/<you>/<repo>/actions`.
+
+### `ci.yml` — on every push / PR to `main`
+
+Two jobs run in parallel:
+
+**`backend`**
+1. Checkout (includes the committed `artifacts/*.pkl` models + `data/sample_readings.json`).
+2. Set up Python 3.12.
+3. `pip install -r requirements.txt`.
+4. `pytest tests/ -v` — all 16 tests. **No secrets are present**, so agents use their
+   heuristic fallback and DB writes are skipped (the tests assert exactly that), making the
+   suite fully self-contained and deterministic.
+
+**`frontend`**
+1. Checkout, set up Node 20.
+2. `npm ci` (clean install from `frontend/package-lock.json`).
+3. `npm run build` — full Next.js production build with placeholder `NEXT_PUBLIC_*`; fails
+   the pipeline if anything won't compile.
+
+Either job failing marks the commit red on GitHub.
+
+### `docker.yml` — on a version tag (`v*`)
+
+The "image" half — packages the backend into a runnable container:
+1. Checkout.
+2. Log in to **GHCR** (GitHub Container Registry) with the built-in `GITHUB_TOKEN` (no
+   secret to configure).
+3. `docker build` from the root **`Dockerfile`** — installs deps, copies code + the
+   committed model artifacts.
+4. Push to `ghcr.io/<you>/<repo>:<tag>`.
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0     # → publishes ghcr.io/<you>/<repo>:v0.2.0
+```
+
+Run that image anywhere (Supabase + Groq via env vars):
+
+```bash
+docker run -p 8000:8000 \
+  -e SUPABASE_URL=... -e SUPABASE_KEY=... -e GROQ_API_KEY=... \
+  ghcr.io/<you>/<repo>:v0.2.0
+```
+
+**Reproduce CI locally:** `pytest tests/ -v` · `cd frontend && npm ci && npm run build` ·
+`docker build -t cps .`
 
 ---
 
@@ -200,4 +232,4 @@ frontend. If a service-role/Groq key is ever exposed, rotate it in the provider 
 > reasoning pipeline (attack classification → impact assessment → mitigation) on Groq, a
 > FastAPI WebSocket sensor stream, a Supabase PostgreSQL event store with Realtime
 > broadcasting, a Replay Engine for controlled attack-scenario demos, a Next.js dashboard,
-> GitHub Actions CI/CD, and Dockerized deployment to Render + Vercel.
+> a Dockerized backend image, and GitHub Actions CI/CD publishing to GHCR.

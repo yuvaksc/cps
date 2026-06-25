@@ -111,10 +111,10 @@ class CTMIFScorer:
     # ── streaming state ────────────────────────────────────────────────
     def reset(self) -> None:
         """Clear all temporal buffers — call between replay sessions."""
-        self._scaled_buf: deque[np.ndarray] = deque(maxlen=self.rstd_window)
-        self._prev_view_a: np.ndarray | None = None
-        self._fused_buf: deque[float] = deque(maxlen=self.smooth_window)
-        self._n_seen = 0
+        self._scaled_buf: deque[np.ndarray] = deque(maxlen=self.rstd_window) # previous scaled sensor rows for rolling std
+        self._prev_view_a: np.ndarray | None = None # previous view A for causal scoring
+        self._fused_buf: deque[float] = deque(maxlen=self.smooth_window) # previous fused scores for rolling mean
+        self._n_seen = 0 # number of rows seen
 
     @property
     def n_seen(self) -> int:

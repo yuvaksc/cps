@@ -20,9 +20,7 @@ class ClassifierOut(BaseModel):
 
 class AssessorOut(BaseModel):
     severity: Severity
-    affected_subsystems: list[str] = Field(
-        description="Component tags and/or process stages impacted"
-    )
+    affected_subsystems: list[str] = Field(description="Component tags and/or process stages impacted")
     blast_radius: str = Field(description="Downstream physical impact")
     impact_score: float = Field(ge=0.0, le=1.0)
 

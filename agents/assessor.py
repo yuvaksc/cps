@@ -49,6 +49,7 @@ def _heuristic(det: dict[str, Any], cls: dict[str, Any]) -> dict[str, Any]:
     if severity == "CRITICAL" and len(subsystems) < 2 and cls.get("confidence", 0) < 0.7:
         severity = "HIGH"
     impact = max(0.0, min(1.0, 0.5 * min(ratio, 3.0) / 3.0 + 0.15 * len(subsystems)))
+    print("hi")
     return {
         "severity": severity,
         "affected_subsystems": tags + subsystems,
