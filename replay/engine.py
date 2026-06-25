@@ -16,6 +16,7 @@ Demo-quality touches (kept OUT of the verified core detector, where they belong)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -72,10 +73,12 @@ class ReplayEngine:
         lab = (self.df["label"].values != 0).astype(int) if "label" in self.df else \
             [0] * self.n
         self.labels = list(map(int, lab))
-        self.attack_starts = [
-            i for i in range(self.n)
-            if self.labels[i] == 1 and (i == 0 or self.labels[i - 1] == 0)
-        ]
+        self.segments = self._compute_segments()          # [(start, end), ...]
+        self.attack_starts = [s for s, _ in self.segments]
+        # Demo-critical: jump targets the next DETECTED attack, not the next
+        # ground-truth one. Recall < 1, so some labelled attacks never fire and
+        # jumping to one would show an empty pipeline. Computed once, cached.
+        self.detected_attack_starts = self._compute_detected_starts()
 
         # control state
         self.current_idx = 0
@@ -131,10 +134,52 @@ class ReplayEngine:
             "paused": self.paused,
             "running": self._running,
             "attacks": len(self.attack_starts),
+            "detected_attacks": len(self.detected_attack_starts),
             "supabase": settings.supabase_enabled,
         }
 
     # ── internals ──────────────────────────────────────────────────────────
+    def _compute_segments(self) -> list[tuple[int, int]]:
+        """Contiguous (start, end) attack spans from the label column."""
+        segs, in_s, s = [], False, 0
+        for i, v in enumerate(self.labels):
+            if v and not in_s:
+                in_s, s = True, i
+            elif not v and in_s:
+                in_s = False
+                segs.append((s, i))
+        if in_s:
+            segs.append((s, self.n))
+        return segs
+
+    def _compute_detected_starts(self) -> list[int]:
+        """Starts of attack segments the detector actually fires on (>=1 hit).
+        Cached to artifacts/detected_attacks.json keyed by dataset + row count
+        so it's computed only once per dataset."""
+        if not self.segments:
+            return []
+        sig = f"{os.path.basename(self.path)}:{self.n}"
+        key = hashlib.md5(sig.encode()).hexdigest()[:10]
+        cache = os.path.join(self.scorer.artifacts_dir, f"detected_attacks_{key}.json")
+        if os.path.exists(cache):
+            try:
+                with open(cache) as f:
+                    d = json.load(f)
+                if d.get("sig") == sig:
+                    return [int(s) for s in d.get("starts", [])]
+            except Exception:
+                pass
+        print(f"[replay] scoring {self.n:,} rows to find detected attacks ...")
+        preds = self.scorer.predict_dataframe(self.df)
+        starts = [int(s) for (s, e) in self.segments if bool(preds[s:e].any())]
+        try:
+            with open(cache, "w") as f:
+                json.dump({"sig": sig, "starts": starts}, f)
+        except Exception:
+            pass
+        print(f"[replay] {len(starts)}/{len(self.segments)} attack segments detected")
+        return starts
+
     def _reset_event_state(self) -> None:
         self._in_event = False
         self._hit_streak = 0
@@ -149,10 +194,10 @@ class ReplayEngine:
         self._reset_event_state()
 
     def _do_jump(self) -> None:
-        upcoming = [i for i in self.attack_starts if i > self.current_idx + PRE_CONTEXT]
-        target = upcoming[0] if upcoming else (
-            self.attack_starts[0] if self.attack_starts else self.current_idx
-        )
+        # Prefer detected attacks; fall back to ground-truth if none detected.
+        targets = self.detected_attack_starts or self.attack_starts
+        upcoming = [i for i in targets if i > self.current_idx + PRE_CONTEXT]
+        target = upcoming[0] if upcoming else (targets[0] if targets else self.current_idx)
         self.current_idx = max(0, target - PRE_CONTEXT)
         self._warm_up()
 

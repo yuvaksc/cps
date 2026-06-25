@@ -36,7 +36,8 @@ export default function DemoControls({ status, connected, liveIdx, onCommand }) 
         {status && (
           <span className="muted">
             {" "}· row {row?.toLocaleString()} / {status.total?.toLocaleString()} ·{" "}
-            {status.attacks} attacks · supabase {status.supabase ? "on" : "off"}
+            {status.detected_attacks ?? status.attacks}/{status.attacks} attacks detected ·
+            supabase {status.supabase ? "on" : "off"}
           </span>
         )}
       </div>

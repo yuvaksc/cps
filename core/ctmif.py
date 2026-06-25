@@ -32,6 +32,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+import pandas as pd
 
 # View labels exposed to the agent layer (detector "flagged_views").
 VIEW_RAW = "raw_sensors"      # View A — raw + temporal sensor features
@@ -248,6 +249,60 @@ class CTMIFScorer:
             "trigger": "spike" if (spike_hit and not smooth_hit)
             else ("threshold" if smooth_hit else "none"),
         }
+
+    # ── batch prediction (offline analysis, e.g. "which attacks fire") ──
+    def _actuator_scores_batch(self, df: pd.DataFrame) -> np.ndarray:
+        """Vectorized -log P(actuator config) for all rows (mirrors the
+        per-row _actuator_score / pp.compute_actuator_scores)."""
+        present = [c for c in self.actuator_cols if c in df.columns]
+        if not present:
+            return np.zeros(len(df))
+        sub = df[present].apply(pd.to_numeric, errors="coerce").fillna(0)
+        cfg = sub.astype(int).astype(str).agg("_".join, axis=1)
+        probs = cfg.map(self.actuator_freq).fillna(1e-6)
+        return -np.log(probs.values)
+
+    def predict_dataframe(self, df: pd.DataFrame) -> np.ndarray:
+        """Vectorized is_anomaly for every row at once — same fused -> smooth ->
+        threshold/spike decision as score(), batched. Lets callers ask which
+        attack segments the detector actually fires on without streaming."""
+        n = len(df)
+        if n == 0:
+            return np.zeros(0, dtype=bool)
+
+        raw = np.column_stack([
+            pd.to_numeric(df[c], errors="coerce").fillna(0.0).to_numpy()
+            if c in df.columns else np.zeros(n)
+            for c in self.sensor_cols
+        ])
+        scaled = self.scaler.transform(raw)
+
+        deriv = np.diff(scaled, axis=0, prepend=scaled[:1])
+        rstd = (pd.DataFrame(scaled)
+                .rolling(self.rstd_window, min_periods=1).std(ddof=1)
+                .fillna(0.0).to_numpy())
+        extras = np.empty((n, 2 * self.n_raw))
+        extras[:, 0::2] = deriv
+        extras[:, 1::2] = rstd
+        view_a = np.hstack([scaled, extras])
+
+        act = self._actuator_scores_batch(df)
+        view_b = np.column_stack([self.pca.transform(view_a), act])
+        view_c = np.diff(view_a, axis=0, prepend=view_a[:1])
+
+        nA = self._norm(-self.model_A.score_samples(view_a), *self._minmax["A"])
+        nB = self._norm(-self.model_B.score_samples(view_b), *self._minmax["B"])
+        nC = self._norm(-self.model_C.score_samples(view_c), *self._minmax["C"])
+
+        fused = 0.6 * np.minimum(nA, nB) + 0.3 * np.maximum(nA, nB) + 0.3 * nC
+        fused += 0.3 * ((nA > _STRONG) & (nB > _STRONG))
+        fused = fused ** 2
+        smoothed = (pd.Series(fused)
+                    .rolling(self.smooth_window, min_periods=1).mean().to_numpy())
+
+        smooth_hit = smoothed >= self.threshold
+        spike_hit = (fused >= self.spike_threshold) & (smoothed > 0.6 * self.threshold)
+        return smooth_hit | spike_hit
 
 
 # Lazily-instantiated process-wide singleton (one ordered stream per process).
