@@ -1,0 +1,23 @@
+# Render Blueprint — deploys the FastAPI backend (REST + WebSocket + Replay).
+# Render injects $PORT; the Dockerfile CMD respects it. Set the sync:false
+# secrets in the Render dashboard. CORS_ORIGINS should be your Vercel URL.
+services:
+  - type: web
+    name: ctmif-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: CORS_ORIGINS
+        sync: false

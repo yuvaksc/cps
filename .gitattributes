@@ -1,0 +1,9 @@
+# Normalize line endings: store text as LF (keeps Dockerfiles/YAML/scripts
+# correct on Linux CI + images), mark known binaries explicitly.
+* text=auto eol=lf
+
+*.pkl binary
+*.npy binary
+*.gz binary
+*.png binary
+*.ico binary

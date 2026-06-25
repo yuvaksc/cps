@@ -1,0 +1,21 @@
+# Keep the backend image small and secret-free.
+.git
+.gitignore
+**/__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+frontend
+.claude
+
+# Secrets — provide via runtime env (compose env_file / Render dashboard)
+.env
+.env.*
+
+# Large / regenerated data not needed at runtime (models in artifacts/*.pkl ARE)
+artifacts/*.npy
+data/*.csv
+data/*.gz
+*.png
+*.log
