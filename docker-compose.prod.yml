@@ -1,0 +1,26 @@
+# Run the IMAGES published to GHCR by .github/workflows/docker.yml — no local
+# build. This is the end of the CD "deliver" chain: pull the artifacts and run
+# them anywhere. (We intentionally don't wire this to a hosted Render/Vercel.)
+#
+#   docker login ghcr.io                       # (or make the packages public)
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# The frontend image was built with NEXT_PUBLIC_API_URL=http://localhost:8000,
+# so run it on the same machine you browse from.
+services:
+  api:
+    image: ghcr.io/yuvaksc/cps:latest
+    ports:
+      - "8000:8000"
+    env_file: .env            # SUPABASE_*, GROQ_API_KEY
+    environment:
+      - CORS_ORIGINS=http://localhost:3000
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/yuvaksc/cps-web:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped

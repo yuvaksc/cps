@@ -56,7 +56,7 @@ flowchart LR
 | Backend | FastAPI (REST + WebSocket) |
 | Database | Supabase (PostgreSQL + Realtime) |
 | Frontend | Next.js (App Router) + Recharts + `@supabase/supabase-js` |
-| DevOps | Docker (backend image), GitHub Actions CI/CD → GHCR |
+| DevOps | Docker + docker-compose, GitHub Actions CI/CD → GHCR (api + web images) |
 
 ---
 
@@ -72,8 +72,10 @@ frontend/              Next.js dashboard (2 pages: live dashboard + anomaly hist
 tests/                 pytest: scorer, API, agents, replay (16 tests)
 scripts/               extract_sample · build_replay_data · diag_detector · live_test
 db/supabase_setup.sql  Schema + Realtime + RLS read policy
-Dockerfile             Backend container image (built + pushed to GHCR by CI)
-.github/workflows/     ci.yml (pytest + next build) · docker.yml (image → GHCR on tag)
+Dockerfile  frontend/Dockerfile   Backend + frontend container images
+docker-compose.yml     Run the whole stack locally (builds from source)
+docker-compose.prod.yml  Run the published GHCR images (no build)
+.github/workflows/     ci.yml (pytest + next build) · docker.yml (both images → GHCR on tag)
 ```
 
 ---
@@ -119,6 +121,15 @@ npm install
 cp .env.local.example .env.local     # API URLs + Supabase anon key (browser-safe)
 npm run dev                          # http://localhost:3000
 ```
+
+### Or: the whole stack with Docker Compose
+
+```bash
+docker compose up --build            # builds + runs api :8000 + frontend :3000
+```
+
+Runs both as containers (reads `.env`). For day-to-day coding the two-terminal flow
+above is faster (instant hot reload); compose is the one-command full-stack run.
 
 ---
 
@@ -193,28 +204,39 @@ Either job failing marks the commit red on GitHub.
 
 ### `docker.yml` — on a version tag (`v*`)
 
-The "image" half — packages the backend into a runnable container:
-1. Checkout.
-2. Log in to **GHCR** (GitHub Container Registry) with the built-in `GITHUB_TOKEN` (no
-   secret to configure).
-3. `docker build` from the root **`Dockerfile`** — installs deps, copies code + the
-   committed model artifacts.
-4. Push to `ghcr.io/<you>/<repo>:<tag>`.
+The CD **"deliver"** half — packages **both** services into images and publishes them to
+**GHCR** (two parallel jobs):
+
+| Job | Builds | Publishes |
+|---|---|---|
+| `backend-image` | root `Dockerfile` (FastAPI + models) | `ghcr.io/<you>/cps` |
+| `frontend-image` | `frontend/Dockerfile` (Next.js standalone) | `ghcr.io/<you>/cps-web` |
+
+Each job: checkout → log in to GHCR with the built-in `GITHUB_TOKEN` → `docker build` →
+push (tagged `:<version>` **and** `:latest`).
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0     # → publishes ghcr.io/<you>/<repo>:v0.2.0
+git tag v0.2.0 && git push origin v0.2.0     # → publishes both images at :v0.2.0 + :latest
 ```
 
-Run that image anywhere (Supabase + Groq via env vars):
+### Run the published images (end of the line — no hosted deploy)
 
 ```bash
-docker run -p 8000:8000 \
-  -e SUPABASE_URL=... -e SUPABASE_KEY=... -e GROQ_API_KEY=... \
-  ghcr.io/<you>/<repo>:v0.2.0
+docker login ghcr.io                              # or make the GHCR packages public
+docker compose -f docker-compose.prod.yml up -d   # pulls + runs api :8000 + web :3000
 ```
+
+That's the full CI/CD **minus the hosting step**: code is tested, both images are built and
+published, and `docker-compose.prod.yml` runs them. The one remaining step to a live URL —
+a deploy job (SSH into a server + `docker compose pull && up -d`, or connect a PaaS) — is
+intentionally left out.
+
+> The web image bakes `NEXT_PUBLIC_API_URL=http://localhost:8000`, so run the prod compose on
+> the machine you browse from. Add `NEXT_PUBLIC_SUPABASE_*` repo secrets to bake Supabase
+> Realtime into the web image (otherwise the dashboard uses its WebSocket fallback).
 
 **Reproduce CI locally:** `pytest tests/ -v` · `cd frontend && npm ci && npm run build` ·
-`docker build -t cps .`
+`docker compose build`
 
 ---
 
