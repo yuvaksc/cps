@@ -173,14 +173,33 @@ the agents fall back to deterministic heuristics (the tests assert that path). W
 
 ---
 
-## CI
+## CI/CD
 
-`.github/workflows/ci.yml` runs on every push / PR to `main`:
+**CI — `.github/workflows/ci.yml`** runs on every push / PR to `main`:
 
 1. Checkout (includes the committed `artifacts/*.pkl` models + `data/sample_readings.json`).
 2. Set up Python 3.12, `pip install -r requirements.txt`.
 3. `pytest tests/ -v` — fully self-contained and deterministic (no secrets → heuristic
    agents, SQLite auto-created).
+
+**CD — `.github/workflows/cd.yml`** builds the single app image and publishes it to the
+GitHub Container Registry (GHCR) on a version tag (or a manual run):
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0     # → ghcr.io/<owner>/<repo>:0.2.0 + :latest
+```
+
+Run the published image (no local build) — same image, two commands:
+
+```bash
+docker run -d -p 8000:8000 -v ctmif-data:/data \
+  -e DATABASE_URL=sqlite:////data/ctmif.db -e CORS_ORIGINS=http://localhost:8501 \
+  ghcr.io/<owner>/<repo>:latest
+docker run -d -p 8501:8501 \
+  -e API_URL=http://localhost:8000 -e API_WS_URL=ws://localhost:8000/ws/sensor-stream \
+  ghcr.io/<owner>/<repo>:latest \
+  streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
+```
 
 **Reproduce CI locally:** `pytest tests/ -v` · **build the image:** `docker compose build`
 

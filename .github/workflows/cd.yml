@@ -1,0 +1,48 @@
+name: CD
+
+# CD — the "deliver" stage. On a version tag (or a manual run) build the single
+# app image (FastAPI + CT-MIF + agents + Streamlit) and publish it to the GitHub
+# Container Registry (GHCR). Run the published image with the docker-compose
+# snippet in the README (swap `build: .` for `image: ghcr.io/<owner>/<repo>:tag`).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:        # also runnable on demand from the Actions tab
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push to GHCR with the built-in GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags & labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}      # ghcr.io/<owner>/<repo>
+          tags: |
+            type=semver,pattern={{version}}             # v1.2.3 -> :1.2.3 (on tags)
+            type=raw,value=latest                       # always :latest
+            type=sha,format=short                       # :sha-abc1234 (traceability)
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
