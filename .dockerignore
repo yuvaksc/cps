@@ -6,8 +6,11 @@
 .pytest_cache
 .venv
 venv
-frontend
 .claude
+
+# Local SQLite DB (created at runtime; compose uses a named volume)
+*.db
+*.db-journal
 
 # Secrets — provide via runtime env (compose env_file / Render dashboard)
 .env

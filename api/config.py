@@ -10,10 +10,8 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # ── Supabase ──
-    supabase_url: str = ""
-    supabase_key: str = ""        # service-role (backend writes)
-    supabase_anon_key: str = ""   # used by frontend only
+    # ── Database (local SQLite) ──
+    database_url: str = "sqlite:///./ctmif.db"
 
     # ── Groq (agents) ──
     groq_api_key: str = ""
@@ -27,15 +25,13 @@ class Settings(BaseSettings):
     # ── server ──
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: str = "http://localhost:3000"
+    # The dashboard's live component calls the API from a null-origin iframe, so
+    # default to "*". Pin to specific origins in production if desired.
+    cors_origins: str = "*"
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
-
-    @property
-    def supabase_enabled(self) -> bool:
-        return bool(self.supabase_url and self.supabase_key)
 
     @property
     def groq_enabled(self) -> bool:

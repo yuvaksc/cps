@@ -32,13 +32,6 @@ def test_loads_and_finds_attacks(engine):
     assert engine.attack_starts, "fixture should contain an attack onset"
 
 
-def test_speed_clamped(engine):
-    engine.set_speed(99999)
-    assert engine.speed == 1000.0
-    engine.set_speed(0)
-    assert engine.speed == 0.1
-
-
 def test_jump_lands_before_attack(engine):
     engine.current_idx = 0
     first_attack = engine.attack_starts[0]
@@ -47,7 +40,7 @@ def test_jump_lands_before_attack(engine):
 
 
 def test_full_stream_emits_readings_event_and_complete(engine):
-    engine.set_speed(1000)
+    engine.speed = 1000.0  # fast-forward the fixture for the test
     msgs: list[dict] = []
 
     async def emit(m):
@@ -86,4 +79,20 @@ def test_websocket_streams_readings():
                     assert "sensors" in m and "score" in m
                     break
             assert got_reading
-            ws.send_json({"cmd": "pause"})
+
+
+def test_jump_endpoint_requests_jump():
+    """POST /replay/jump returns engine status and arms the jump flag the run
+    loop consumes (the loop then moves the pointer to the next attack)."""
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from replay.engine import get_engine
+
+    with TestClient(app) as client:
+        engine = get_engine()
+        engine._jump_requested = False
+        r = client.post("/replay/jump")
+        assert r.status_code == 200
+        assert r.json()["type"] == "status"
+        assert engine._jump_requested is True

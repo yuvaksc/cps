@@ -14,13 +14,19 @@ pydantic-settings>=2.2
 python-dotenv>=1.0
 websockets>=12.0
 
-# ─── Database ───────────────────────────────────────────────────────
-supabase>=2.4
+# ─── Database (embedded, no server) ─────────────────────────────────
+sqlalchemy>=2.0
 
 # ─── Agents (Groq via LangGraph) ────────────────────────────────────
 langgraph>=0.2
 langchain-core>=0.3
 langchain-groq>=0.2
+
+# ─── Dashboard (Streamlit frontend) ─────────────────────────────────
+# The live chart + agent flow run as an in-browser component that opens the
+# WebSocket directly (for smooth ~60fps streaming), so no Python WS client is
+# needed — Streamlit just hosts the component.
+streamlit>=1.33
 
 # ─── Dev / test ─────────────────────────────────────────────────────
 pytest>=8.0

@@ -1,25 +1,34 @@
 # Full stack, one command:  docker compose up --build
-# Reads secrets from .env (SUPABASE_*, GROQ_*). The frontend's NEXT_PUBLIC_*
-# are inlined at build time and must be reachable from the BROWSER, hence
-# localhost rather than the internal "api" service name.
+#
+# Two services share one image (built from the root Dockerfile) and differ only
+# in their start command: the FastAPI backend (which owns the SQLite DB) and the
+# Streamlit dashboard. The dashboard embeds a browser component that talks to the
+# API directly, so API_URL/API_WS_URL must be reachable from the BROWSER —
+# hence localhost, not the internal "api" service name. Drop a GROQ_API_KEY in
+# .env to enable the LLM agents (otherwise they use the heuristic fallback).
 services:
   api:
     build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
-    env_file: .env
     environment:
-      - CORS_ORIGINS=http://localhost:3000
+      - DATABASE_URL=sqlite:////data/ctmif.db
+      - CORS_ORIGINS=http://localhost:8501
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    volumes:
+      - ctmif-data:/data        # persist the SQLite DB across restarts
 
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
-        NEXT_PUBLIC_API_WS_URL: ws://localhost:8000/ws/sensor-stream
-        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+  dashboard:
+    build: .
+    command: streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true
     ports:
-      - "3000:3000"
+      - "8501:8501"
+    environment:
+      - API_URL=http://localhost:8000
+      - API_WS_URL=ws://localhost:8000/ws/sensor-stream
     depends_on:
       - api
+
+volumes:
+  ctmif-data:

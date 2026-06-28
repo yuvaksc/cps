@@ -8,12 +8,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
-from api.routes import analyze, anomalies, stream
+from api.database import init_db
+from api.routes import anomalies, stream
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm the CT-MIF models at startup so the first /analyze isn't slow.
+    # Create the SQLite schema if needed.
+    init_db()
+    # Warm the CT-MIF models at startup so the first scored reading isn't slow.
     app.state.scorer_ready = False
     try:
         from core.ctmif import get_scorer
@@ -23,7 +26,7 @@ async def lifespan(app: FastAPI):
         print("[startup] CT-MIF models loaded.")
     except Exception as e:
         print(f"[startup] CT-MIF models NOT loaded: {e}")
-    print(f"[startup] Supabase: {'enabled' if settings.supabase_enabled else 'DISABLED'}"
+    print(f"[startup] DB: {settings.database_url}"
           f" | Groq: {'enabled' if settings.groq_enabled else 'DISABLED'}")
     yield
 
@@ -38,13 +41,15 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
+    # The Streamlit dashboard embeds a browser component that calls the API
+    # directly (WebSocket + POST /replay/jump) from a sandboxed iframe whose
+    # Origin is "null", so we allow any origin. No credentials/cookies are used.
     allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(analyze.router)
 app.include_router(anomalies.router)
 app.include_router(stream.router)
 
@@ -54,7 +59,6 @@ def health():
     return {
         "status": "ok",
         "model_ready": getattr(app.state, "scorer_ready", False),
-        "supabase": settings.supabase_enabled,
         "groq": settings.groq_enabled,
     }
 

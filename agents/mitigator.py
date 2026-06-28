@@ -11,12 +11,25 @@ from typing import Any
 from agents.schemas import MitigatorOut
 
 _SYSTEM = (
-    "You are an ICS incident-response lead for a water-treatment plant. Given "
-    "an attack classification and impact assessment, produce a SHORT ordered "
-    "list of concrete operator actions (most urgent first) and an overall "
-    "priority (LOW/MEDIUM/HIGH/IMMEDIATE). Actions must be specific to the "
-    "attack type and the named subsystems — reference real components. Avoid "
-    "generic advice."
+    "ROLE: You are an ICS incident-response lead for a 6-stage Secure Water "
+    "Treatment (SWaT) plant.\n"
+    "TASK: Turn an attack classification and impact assessment into an actionable "
+    "operator playbook.\n\n"
+    "OUTPUT CONTRACT:\n"
+    "  • actions — an ORDERED list of 3-6 concrete steps, most urgent first. Each "
+    "is a single imperative instruction.\n"
+    "  • priority — overall response priority: LOW | MEDIUM | HIGH | IMMEDIATE "
+    "(IMMEDIATE for a CRITICAL assessment).\n\n"
+    "GUIDELINES:\n"
+    "  1. The FIRST action must contain or isolate the threat (e.g. isolate the "
+    "affected stage, switch its actuators to manual).\n"
+    "  2. Tailor steps to the attack type — FDI: cross-validate sensors & revert "
+    "setpoints; DoS: fail over comms & check flooding; Replay: rotate "
+    "credentials/nonces & invalidate the session; Stealth: tighten monitoring & "
+    "trend affected tags.\n"
+    "  3. Reference the named subsystems / component tags from the assessment — "
+    "no generic boilerplate, and do not invent tags.\n"
+    "  4. End with notification and forensic-capture steps."
 )
 
 _PRIORITY = {"LOW": "LOW", "MEDIUM": "MEDIUM", "HIGH": "HIGH", "CRITICAL": "IMMEDIATE"}
@@ -24,11 +37,12 @@ _PRIORITY = {"LOW": "LOW", "MEDIUM": "MEDIUM", "HIGH": "HIGH", "CRITICAL": "IMME
 
 def _prompt(cls: dict[str, Any], asn: dict[str, Any]) -> str:
     return (
-        f"Attack type: {cls.get('attack_type')}\n"
+        f"Attack type: {cls.get('attack_type')} (confidence {cls.get('confidence')})\n"
         f"Severity: {asn.get('severity')}  impact_score: {asn.get('impact_score')}\n"
         f"Affected subsystems: {asn.get('affected_subsystems')}\n"
         f"Blast radius: {asn.get('blast_radius')}\n\n"
-        "List the prioritized response actions and an overall priority."
+        "Produce the ordered response actions (most urgent first, isolation step "
+        "first) and the overall priority."
     )
 
 

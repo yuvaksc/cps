@@ -1,13 +1,13 @@
 """
 core/ctmif.py — Online inference wrapper for the CT-MIF detector.
 
-The training scripts (pp.py / train.py / test.py) operate on the *whole* test
-set at once: temporal features, fusion, smoothing and thresholds are all vector
+The training scripts (og_pipeline/pp.py / train.py / test.py) operate on the
+*whole* test set at once: temporal features, fusion, smoothing and thresholds are all vector
 ops over the full array. A production API instead receives readings **one at a
 time**, so this module reproduces the exact training-time pipeline *causally*
 using rolling buffers — no future data, no global re-normalization.
 
-What it reproduces, per reading, faithful to pp.py + train.py + test.py:
+What it reproduces, per reading, faithful to og_pipeline/{pp,train,test}.py:
   1. Scale raw sensors with the frozen StandardScaler.
   2. Temporal features per sensor: `_deriv` (1-step diff) + `_rstd` (trailing
      60-row rolling std)  ->  View A (75-dim, same column order as training).
@@ -48,9 +48,9 @@ _STRONG = 0.8
 def quick_severity(score_ratio: float) -> str:
     """Cheap severity bucket from smoothed/threshold ratio.
 
-    Placeholder used when the LLM ImpactAssessor agent is not in the loop
-    (e.g. Phase-1 /analyze, or replay fast-forward). The assessor overrides
-    this with a reasoned severity once the agent pipeline runs.
+    Placeholder used when the LLM ImpactAssessor agent is not yet in the loop
+    (e.g. the immediate event_start cue before the agents finish). The assessor
+    overrides this with a reasoned severity once the agent pipeline runs.
     """
     if score_ratio >= 3.0:
         return "CRITICAL"
@@ -77,7 +77,7 @@ class CTMIFScorer:
             path = os.path.join(artifacts_dir, name)
             if not os.path.exists(path):
                 raise FileNotFoundError(
-                    f"Missing artifact '{path}'. Run pp.py then train.py first."
+                    f"Missing artifact '{path}'. Run og_pipeline/pp.py then og_pipeline/train.py first."
                 )
             return joblib.load(path)
 

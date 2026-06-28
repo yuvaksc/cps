@@ -1,4 +1,6 @@
-# ── Backend image: FastAPI + CT-MIF + agents ────────────────────────
+# ── App image: FastAPI + CT-MIF + agents + Streamlit dashboard ───────
+# One image runs both services (see docker-compose.yml): the uvicorn API and
+# the Streamlit dashboard differ only by start command.
 # Python 3.12 matches the env the model artifacts were pickled under.
 FROM python:3.12-slim
 
@@ -16,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # (.dockerignore keeps out the large arrays, raw CSVs, frontend, and .env.)
 COPY . .
 
-EXPOSE 8000
+EXPOSE 8000 8501
 
-# Render (and most PaaS) inject $PORT; default to 8000 locally.
+# Default command runs the API; docker-compose overrides it for the dashboard.
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

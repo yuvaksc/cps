@@ -1,8 +1,9 @@
-"""WebSocket sensor stream + replay control endpoints.
+"""WebSocket sensor stream + the single replay control (jump-to-next-attack).
 
-The WebSocket pushes scored readings and anomaly events; controls can be sent
-either as WS command messages ({"cmd": ...}) or via the REST endpoints below
-(both mutate the same singleton engine).
+The WebSocket is broadcast-only: it pushes scored readings and anomaly events
+from the replay engine. The one control — jump — is issued out-of-band via the
+REST endpoint below (not over the socket), which mutates the same singleton
+engine so the stream reflects the new position on the next tick.
 """
 
 from __future__ import annotations
@@ -10,27 +11,10 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
 
 from replay.engine import get_engine
 
 router = APIRouter(tags=["replay"])
-
-
-def _apply_command(engine, data: dict) -> None:
-    cmd = (data or {}).get("cmd")
-    if cmd == "play":
-        engine.play()
-    elif cmd == "pause":
-        engine.pause()
-    elif cmd == "speed":
-        engine.set_speed(data.get("speed", engine.speed))
-    elif cmd == "jump":
-        engine.request_jump()
-    elif cmd == "seek":
-        engine.seek(int(data.get("idx", 0)))
-    elif cmd == "restart":
-        engine.seek(0)
 
 
 @router.websocket("/ws/sensor-stream")
@@ -45,19 +29,18 @@ async def sensor_stream(ws: WebSocket):
 
     # Begin a new session: any previous run loop sees the generation change and
     # exits, so the newest connection cleanly owns the singleton engine — robust
-    # to reconnects / HMR / extra tabs without a stale disconnect killing it.
+    # to reconnects / extra tabs without a stale disconnect killing it.
     session = engine.begin_session()
-    engine.play()  # a fresh connection always starts streaming
 
     async def emit(msg: dict) -> None:
         await ws.send_json(msg)
 
     stream_task = asyncio.create_task(engine.run(emit, session))
     try:
+        # The client never sends commands; we still drain the socket so a
+        # disconnect is detected promptly and the engine can be released.
         while True:
-            data = await ws.receive_json()
-            if engine._gen == session:
-                _apply_command(engine, data)
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -68,48 +51,10 @@ async def sensor_stream(ws: WebSocket):
         stream_task.cancel()
 
 
-# ── REST controls (mirror the WS commands; handy for testing / the spec) ───
-class StartBody(BaseModel):
-    speed: float | None = None
-    start_offset: int | None = None
-
-
-class SpeedBody(BaseModel):
-    speed: float
-
-
-@router.post("/replay/start")
-def replay_start(body: StartBody):
-    e = get_engine()
-    if body.speed is not None:
-        e.set_speed(body.speed)
-    if body.start_offset is not None:
-        e.seek(body.start_offset)
-    e.play()
-    return e.status()
-
-
 @router.post("/replay/jump")
 def replay_jump():
+    """Jump the replay engine to the next detected attack. The WebSocket stream
+    reflects the new position on its next tick."""
     e = get_engine()
     e.request_jump()
     return e.status()
-
-
-@router.post("/replay/pause")
-def replay_pause():
-    e = get_engine()
-    e.pause()
-    return e.status()
-
-
-@router.post("/replay/speed")
-def replay_speed(body: SpeedBody):
-    e = get_engine()
-    e.set_speed(body.speed)
-    return e.status()
-
-
-@router.get("/replay/status")
-def replay_status():
-    return get_engine().status()

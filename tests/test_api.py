@@ -1,20 +1,13 @@
 """API smoke tests via FastAPI TestClient.
 
-/health and /anomalies-without-Supabase run anywhere. /analyze needs trained
-artifacts and is skipped if they're missing.
+/health and /anomalies run anywhere (SQLite needs no configuration). The
+end-to-end persistence check writes a row through the ORM and reads it back via
+the REST endpoint.
 """
 
-import json
-import os
-
-import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
-
-ART = os.getenv("ARTIFACTS_DIR", "artifacts")
-SAMPLE = "data/sample_readings.json"
-HAS_MODELS = os.path.exists(os.path.join(ART, "model_A.pkl"))
 
 client = TestClient(app)
 
@@ -24,25 +17,37 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert set(body) >= {"model_ready", "supabase", "groq"}
+    assert set(body) >= {"model_ready", "groq"}
 
 
-def test_anomalies_requires_supabase():
-    # With no SUPABASE_* configured, these are inherently DB-backed -> 503.
-    from api.config import settings
-
-    if settings.supabase_enabled:
-        pytest.skip("Supabase configured; 503 path not applicable")
-    assert client.get("/anomalies").status_code == 503
-
-
-@pytest.mark.skipif(not HAS_MODELS, reason="trained artifacts not present")
-def test_analyze_returns_detector_report():
-    with open(SAMPLE) as f:
-        row = json.load(f)["rows"][0]
-    r = client.post("/analyze", json={"raw_features": row, "timestamp": row["Timestamp"]})
+def test_anomalies_returns_list():
+    # SQLite-backed: always 200 with a paginated envelope (possibly empty).
+    r = client.get("/anomalies")
     assert r.status_code == 200
     body = r.json()
-    assert "detector" in body["agent_report"]
-    assert isinstance(body["is_anomaly"], bool)
-    assert "anomaly_score" in body
+    assert set(body) >= {"count", "limit", "offset", "items"}
+    assert isinstance(body["items"], list)
+
+
+def test_persisted_event_is_listed_and_fetchable():
+    from api import database
+
+    database.init_db()
+    ev = database.save_anomaly_event(
+        anomaly_score=0.91,
+        severity="HIGH",
+        agent_report={"classifier": {"attack_type": "FDI"}},
+        idx=123,
+        raw_features={"FIT101": 2.6},
+    )
+    assert ev and ev["id"]
+
+    listed = client.get("/anomalies").json()
+    assert listed["count"] >= 1
+    assert any(item["id"] == ev["id"] for item in listed["items"])
+
+    one = client.get(f"/anomalies/{ev['id']}")
+    assert one.status_code == 200
+    assert one.json()["attack_type"] == "FDI"
+
+    assert client.get("/anomalies/99999999").status_code == 404

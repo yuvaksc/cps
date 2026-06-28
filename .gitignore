@@ -10,6 +10,10 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Local SQLite database (created at runtime by the API)
+*.db
+*.db-journal
+
 # CT-MIF artifacts & data
 #   Commit the small trained models (artifacts/*.pkl, ~7 MB) so the repo is
 #   self-contained, testable in CI, and deployable. Ignore the large arrays
@@ -21,12 +25,8 @@ data/*.gz
 *.png
 *.log
 
-# Node / frontend
-node_modules/
-frontend/dist/
-frontend/.vite/
-
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
+.claude

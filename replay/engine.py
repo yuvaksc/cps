@@ -25,11 +25,11 @@ from typing import Any, Awaitable, Callable
 import pandas as pd
 
 from agents.graph import run_reasoning
-from api import db
+from api import database
 from api.config import settings
 from core.ctmif import CTMIFScorer, quick_severity
 
-BASE_INTERVAL = 1.0     # SWaT is sampled at 1 Hz -> 1 row == 1 second
+BASE_INTERVAL = 0.001     # SWaT is sampled at 1 Hz -> 1 row == 1 second
 MIN_TICK = 0.02         # don't sleep shorter than this; batch rows instead
 WARMUP_SILENT = 60      # rows fed to the scorer silently to prime buffers
 PRE_CONTEXT = 60        # visible rows shown before an attack after a jump
@@ -82,9 +82,7 @@ class ReplayEngine:
         # control state
         self.current_idx = 0
         self.speed = float(settings.replay_default_speed)
-        self.paused = False
         self._jump_requested = False
-        self._seek_requested = False
         self._status_dirty = False
         self._last_emit = 0.0
         self._gen = 0
@@ -92,26 +90,11 @@ class ReplayEngine:
         self._running = False
         self._reset_event_state()
 
-    # ── control surface (called from REST endpoints or WS commands) ────────
-    def play(self) -> None:
-        self.paused = False
-        self._status_dirty = True
-
-    def pause(self) -> None:
-        self.paused = True
-        self._status_dirty = True
-
-    def set_speed(self, multiplier: float) -> None:
-        self.speed = max(0.1, min(float(multiplier), 1000.0))
-        self._status_dirty = True
-
+    # ── control surface ────────────────────────────────────────────────────
+    # The demo exposes exactly one control: "jump to next attack". The engine
+    # otherwise streams autonomously at a fixed speed once a client connects.
     def request_jump(self) -> None:
         self._jump_requested = True
-        self._status_dirty = True
-
-    def seek(self, idx: int) -> None:
-        self.current_idx = max(0, min(int(idx), self.n - 1))
-        self._seek_requested = True  # warm up at this position (NOT a next-attack jump)
         self._status_dirty = True
 
     def stop(self) -> None:
@@ -130,11 +113,9 @@ class ReplayEngine:
             "idx": int(self.current_idx),
             "total": self.n,
             "speed": self.speed,
-            "paused": self.paused,
             "running": self._running,
             "attacks": len(self.attack_starts),
             "detected_attacks": len(self.detected_attack_starts),
-            "supabase": settings.supabase_enabled,
         }
 
     # ── internals ──────────────────────────────────────────────────────────
@@ -193,7 +174,7 @@ class ReplayEngine:
 
     def _do_jump(self) -> None:
         # Prefer detected attacks; fall back to ground-truth if none detected.
-        targets = self.detected_attack_starts or self.attack_starts
+        targets = self.detected_attack_starts 
         upcoming = [i for i in targets if i > self.current_idx + PRE_CONTEXT]
         target = upcoming[0] if upcoming else (targets[0] if targets else self.current_idx)
         self.current_idx = max(0, target - PRE_CONTEXT)
@@ -211,18 +192,21 @@ class ReplayEngine:
             "label": int(row.get("label", 0) != 0),
         }
 
-    def _process_event_sync(self, row: dict, det: dict) -> tuple[dict, str, str | None]:
-        """Heavy work for a confirmed event: agent reasoning + persistence."""
+    def _process_event_sync(self, idx: int, row: dict, det: dict) -> tuple[dict, str, int | None]:
+        """Heavy work for a confirmed event: agent reasoning + persistence.
+
+        Once the MitigationAdvisor (final agent) completes, the full report is
+        written to SQLite as a single AnomalyEvent row.
+        """
         report = run_reasoning(row, det)
         severity = (report.get("assessor") or {}).get("severity") \
             or quick_severity(det["score_ratio"])
-        reading_row = db.insert_reading(row, str(row.get("Timestamp")), None)
-        ev = db.insert_anomaly_event(
-            reading_id=reading_row["id"] if reading_row else None,
+        ev = database.save_anomaly_event(
             anomaly_score=det["anomaly_score"],
-            is_anomaly=True,
             severity=severity,
             agent_report=report,
+            idx=idx,
+            raw_features=row,
         )
         return report, severity, (ev["id"] if ev else None)
 
@@ -232,7 +216,7 @@ class ReplayEngine:
                     "severity": quick_severity(det["score_ratio"]), "detector": det})
         loop = asyncio.get_event_loop()
         report, severity, event_id = await loop.run_in_executor(
-            None, self._process_event_sync, row, det
+            None, self._process_event_sync, idx, row, det
         )
         await emit({"type": "event", "idx": int(idx), "event_id": event_id,
                     "severity": severity, "agent_report": report})
@@ -253,19 +237,13 @@ class ReplayEngine:
 
     # ── main loop ───────────────────────────────────────────────────────────
     async def _control_tick(self, emit: Emit) -> bool:
-        """Apply any pending control flag (jump / seek / speed / pause / play)
-        and emit fresh status. Single status sender -> no concurrent WS writes.
-        Returns True if it handled something (caller should re-loop)."""
+        """Apply a pending jump (the only control) and emit fresh status. Single
+        status sender -> no concurrent WS writes. Returns True if it handled
+        something (caller should re-loop)."""
         if self._jump_requested:
             self._jump_requested = False
             self._status_dirty = False
             self._do_jump()
-            await emit(self.status())
-            return True
-        if self._seek_requested:
-            self._seek_requested = False
-            self._status_dirty = False
-            self._warm_up()
             await emit(self.status())
             return True
         if self._status_dirty:
@@ -275,14 +253,13 @@ class ReplayEngine:
         return False
 
     async def _interruptible_sleep(self, total: float, session: int) -> None:
-        """Sleep up to `total`s, waking early when a control flag flips so
-        pause/jump/speed register within ~SLEEP_CHUNK at any speed."""
+        """Sleep up to `total`s, waking early when a jump is requested so it
+        registers within ~SLEEP_CHUNK at any speed."""
         end = time.monotonic() + total
         while True:
             remaining = end - time.monotonic()
-            if (remaining <= 0 or self._stop or self._gen != session or self.paused
-                    or self._jump_requested or self._seek_requested
-                    or self._status_dirty):
+            if (remaining <= 0 or self._stop or self._gen != session
+                    or self._jump_requested or self._status_dirty):
                 return
             await asyncio.sleep(min(SLEEP_CHUNK, remaining))
 
@@ -295,11 +272,8 @@ class ReplayEngine:
         await emit(self.status())
         try:
             while not self._stop and self._gen == session and self.current_idx < self.n:
-                # Controls take priority and work whether or not we're paused.
+                # A pending jump takes priority over streaming the next row.
                 if await self._control_tick(emit):
-                    continue
-                if self.paused:
-                    await asyncio.sleep(SLEEP_CHUNK)
                     continue
 
                 delay = BASE_INTERVAL / max(self.speed, 1e-6)
@@ -310,8 +284,8 @@ class ReplayEngine:
                     sleep_for = MIN_TICK
 
                 for _ in range(batch):
-                    if (self._stop or self._gen != session or self.paused
-                            or self._jump_requested or self._seek_requested
+                    if (self._stop or self._gen != session
+                            or self._jump_requested
                             or self.current_idx >= self.n):
                         break
                     idx = self.current_idx
