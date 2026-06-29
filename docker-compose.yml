@@ -18,6 +18,10 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
     volumes:
       - ctmif-data:/data        # persist the SQLite DB across restarts
+      # Mount the host data/ so the engine streams the FULL test split
+      # (data/replay_test.csv.gz). The image excludes the .gz to stay lean, so
+      # without this mount the container falls back to the 913-row sample.
+      - ./data:/app/data:ro
 
   dashboard:
     build: .
