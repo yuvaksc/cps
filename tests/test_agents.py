@@ -18,11 +18,13 @@ ART = os.getenv("ARTIFACTS_DIR", "artifacts")
 SAMPLE = "data/sample_readings.json"
 HAS_MODELS = os.path.exists(os.path.join(ART, "model_A.pkl"))
 
+# A clean FDI signature: sensor-space views quiet (low raw_sensors/temporal_diff)
+# but the actuator state is impossible (saturated actuator_surprise, high pca_view).
 SYNTH_DET = {
     "anomaly_score": 0.9,
     "is_anomaly": True,
-    "flagged_views": ["pca_view", "raw_sensors"],
-    "view_scores": {"raw_sensors": 0.7, "pca_view": 0.82, "temporal_diff": 0.2},
+    "flagged_views": ["pca_view"],
+    "view_scores": {"raw_sensors": 0.3, "pca_view": 0.82, "temporal_diff": 0.2},
     "actuator_surprise": 13.8,
     "score_ratio": 1.6,
     "threshold": 0.667,

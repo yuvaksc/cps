@@ -29,13 +29,13 @@ from api import database
 from api.config import settings
 from core.ctmif import CTMIFScorer, quick_severity
 
-BASE_INTERVAL = 0.001     # SWaT is sampled at 1 Hz -> 1 row == 1 second
+BASE_INTERVAL = 1.0   # SWaT is sampled at 1 Hz -> 1 row == 1 second
 MIN_TICK = 0.02         # don't sleep shorter than this; batch rows instead
 WARMUP_SILENT = 60      # rows fed to the scorer silently to prime buffers
-PRE_CONTEXT = 60        # visible rows shown before an attack after a jump
+PRE_CONTEXT = 20        # visible rows shown before an attack after a jump
 CONFIRM_HITS = 3        # consecutive anomalies needed to open an event
 CLEAR_MISSES = 20       # consecutive normals needed to close an event
-EMIT_MIN_INTERVAL = 0.04  # cap normal-reading emits at ~25/s (anomalies always emit)
+EMIT_MIN_INTERVAL = 0.000001  # cap normal-reading emits at ~25/s (anomalies always emit)
 SLEEP_CHUNK = 0.05      # max single sleep; lets controls take effect within ~50ms
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
@@ -174,7 +174,7 @@ class ReplayEngine:
 
     def _do_jump(self) -> None:
         # Prefer detected attacks; fall back to ground-truth if none detected.
-        targets = self.detected_attack_starts 
+        targets = self.detected_attack_starts or self.attack_starts
         upcoming = [i for i in targets if i > self.current_idx + PRE_CONTEXT]
         target = upcoming[0] if upcoming else (targets[0] if targets else self.current_idx)
         self.current_idx = max(0, target - PRE_CONTEXT)
@@ -243,7 +243,10 @@ class ReplayEngine:
         if self._jump_requested:
             self._jump_requested = False
             self._status_dirty = False
-            self._do_jump()
+            # _do_jump() re-scores ~60 warm-up rows (~tens of ms each); run it in
+            # a thread so the event loop stays responsive (the POST returns
+            # immediately and the stream isn't frozen) during the jump.
+            await asyncio.get_event_loop().run_in_executor(None, self._do_jump)
             await emit(self.status())
             return True
         if self._status_dirty:
@@ -268,7 +271,9 @@ class ReplayEngine:
             session = self.begin_session()
         self._running = True
         self._last_emit = 0.0
-        self._warm_up()
+        # Off-loop warm-up (same reason as the jump): don't freeze the event loop
+        # for ~tens-of-ms × WARMUP_SILENT rows at stream start.
+        await asyncio.get_event_loop().run_in_executor(None, self._warm_up)
         await emit(self.status())
         try:
             while not self._stop and self._gen == session and self.current_idx < self.n:

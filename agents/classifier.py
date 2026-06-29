@@ -1,12 +1,14 @@
 """Agent 2 — AttackClassifier.
 
-Distinguishes the ICS attack class from the detector's evidence:
-  DoS     — comms flooding/blocking: sensors freeze or jump abruptly
-  FDI     — false data injection: sensor values contradict actuator state
-            (high actuator surprise, PCA view fires)
-  Replay  — recorded-traffic playback: values look plausible but temporal
-            correlations break
-  Stealth — slow, small manipulation hugging the normal band
+Distinguishes the ICS attack class from the detector's evidence, using the two
+CLEAN sensor-space views (raw_sensors, temporal_diff) as the primary signal —
+pca_view embeds actuator_surprise, which saturates on every attack, so it can't
+discriminate type:
+  DoS     — comms flooding/blocking: temporal_diff high (sensors freeze/jump)
+  Stealth — slow drift: raw_sensors elevated, temporal_diff low
+  FDI     — actuator state impossible behind normal-looking sensors (sensor
+            views quiet, actuator_surprise saturated, pca_view high)
+  Replay  — both sensor views moderately elevated/plausible, correlation broken
 """
 
 from __future__ import annotations
@@ -25,26 +27,31 @@ _SYSTEM = (
     "  • pca_view      — PCA of the sensor space + actuator-state surprise\n"
     "  • temporal_diff — step-over-step change (captures freezes and abrupt jumps)\n"
     "plus actuator_surprise = -log P(actuator configuration).\n\n"
-    "CRITICAL — do NOT over-weight actuator_surprise. It saturates at its ceiling "
-    "(~13.82, the floor probability for an actuator-state combination never seen "
-    "in training) during ESSENTIALLY EVERY attack in this plant. So a value near "
-    "13.82 confirms 'an attack is happening' but does NOT identify the class on "
-    "its own — never default to FDI just because actuator_surprise is high.\n\n"
-    "DISCRIMINATE by WHICH VIEW DOMINATES and the temporal behavior:\n"
-    "  • DoS     — temporal_diff is the dominant view (abrupt freeze/jump).\n"
-    "  • Stealth — raw_sensors elevated while temporal_diff stays low (slow drift "
-    "hugging the normal band).\n"
-    "  • FDI     — pca_view clearly dominates with low/moderate temporal change "
-    "(sensor values inconsistent with actuator state); the saturated "
-    "actuator_surprise reinforces this ONLY when pca_view leads.\n"
-    "  • Replay  — no single view dominates (raw ≈ pca, moderate scores); values "
-    "look individually plausible but cross-correlation is broken.\n"
-    "  • Unknown — evidence is weak (no view clears ~0.6) or contradictory.\n\n"
+    "CRITICAL — pca_view is NOT a reliable TYPE discriminator. It is built from "
+    "the sensor PCA PLUS actuator_surprise, and actuator_surprise saturates "
+    "(~13.82, the floor probability for an actuator combination never seen in "
+    "training) on ESSENTIALLY EVERY attack here. So pca_view runs high regardless "
+    "of attack type. Determine the type PRIMARILY from the two CLEAN sensor-space "
+    "views — raw_sensors and temporal_diff — and never classify FDI merely "
+    "because pca_view or actuator_surprise is high.\n\n"
+    "DECISION GUIDE (raw_sensors & temporal_diff are the primary signals):\n"
+    "  • DoS     — temporal_diff is high / dominant: values freeze or jump "
+    "abruptly.\n"
+    "  • Stealth — raw_sensors elevated while temporal_diff stays low: slow drift "
+    "hugging the normal band.\n"
+    "  • FDI     — the sensor-space views are UNREMARKABLE (raw_sensors and "
+    "temporal_diff both modest) yet actuator_surprise is saturated and pca_view "
+    "is high: the actuator STATE is impossible given the normal-looking sensors.\n"
+    "  • Replay  — raw_sensors and temporal_diff are both moderately elevated and "
+    "individually plausible, with no single clean signature: replayed traffic, "
+    "broken cross-correlation.\n"
+    "  • Unknown — nothing clears ~0.6, or the evidence is contradictory.\n\n"
     "RULES:\n"
     "  1. Reason ONLY from the evidence — never invent sensor tags or values.\n"
-    "  2. Calibrate `confidence` to how clearly one view dominates (clean → high; "
-    "mixed → low; nothing clears ~0.6 → Unknown).\n"
-    "  3. In `reasoning`, cite the deciding view(s) in one or two sentences."
+    "  2. Base the class on raw_sensors / temporal_diff; treat pca_view & "
+    "actuator_surprise as FDI-confirming only when the sensor views are quiet.\n"
+    "  3. Calibrate `confidence` to the clarity of the signal; cite the deciding "
+    "view(s) in `reasoning` (one or two sentences)."
 )
 
 
@@ -65,34 +72,40 @@ def _prompt(det: dict[str, Any]) -> str:
 
 
 def _heuristic(det: dict[str, Any]) -> dict[str, Any]:
-    """Classify by which detector VIEW dominates. actuator_surprise is NOT used
-    as a primary signal: it saturates (~13.82) during almost every attack, so it
-    can't distinguish the class — only the relative view scores can."""
+    """Classify on the CLEAN sensor-space views (raw_sensors, temporal_diff).
+
+    pca_view embeds actuator_surprise, which saturates (~13.82) on almost every
+    attack, so pca_view is high regardless of type and is NOT used as a primary
+    discriminator. It only confirms FDI when the sensor-space views are quiet
+    (an impossible actuator state behind normal-looking sensors)."""
     views = det.get("view_scores", {})
     raw = views.get("raw_sensors", 0.0)
     pca = views.get("pca_view", 0.0)
     temporal = views.get("temporal_diff", 0.0)
     act = det.get("actuator_surprise", 0.0)
+    clean = max(raw, temporal)  # strongest CLEAN (uncontaminated) signal
 
     if max(raw, pca, temporal) < 0.6:
         atk, conf = "Unknown", 0.4
         why = "No view clears the detection band; attack class can't be determined confidently."
-    elif temporal >= raw and temporal >= pca:
+    elif temporal >= 0.6 and temporal >= raw:
         atk, conf = "DoS", 0.6
-        why = (f"Temporal-difference view dominates ({temporal}); an abrupt "
+        why = (f"Temporal-difference view is high ({temporal}); an abrupt "
                "freeze/jump consistent with a denial-of-service disruption.")
-    elif raw >= pca and temporal < 0.4:
+    elif raw >= 0.6 and temporal <= 0.4:
         atk, conf = "Stealth", 0.55
-        why = (f"Raw-sensor view leads ({raw}) with low temporal change "
+        why = (f"Sustained raw-sensor deviation ({raw}) with low temporal change "
                f"({temporal}); slow, low-and-slow manipulation near the normal band.")
-    elif pca >= raw and pca >= temporal:
-        atk, conf = "FDI", 0.65
-        why = (f"PCA view dominates ({pca}) with saturated actuator_surprise "
-               f"({act}); sensor values inconsistent with actuator state.")
+    elif clean < 0.5 and act >= 12.0 and pca >= 0.6:
+        atk, conf = "FDI", 0.6
+        why = (f"Sensor views are unremarkable (raw={raw}, temporal={temporal}) "
+               f"yet the actuator state is impossible (actuator_surprise={act}); "
+               "false-data-injection signature.")
     else:
         atk, conf = "Replay", 0.5
-        why = ("No single view dominates (raw≈pca, moderate scores); plausible "
-               "values with broken cross-correlation, consistent with replay.")
+        why = (f"Both sensor views are moderately elevated and plausible "
+               f"(raw={raw}, temporal={temporal}) with no single clean signature; "
+               "consistent with replayed traffic.")
     return {"attack_type": atk, "confidence": conf, "reasoning": why,
             "_source": "heuristic"}
 
